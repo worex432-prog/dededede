@@ -517,20 +517,29 @@ def remote_load_library(hproc, pid, modules, dll):
 
 
 def resolve_fn(hproc, modules, dll, name=None, ordinal=None):
-    """Адрес импорта. Для api-ms-* ищем экспорт во всех модулях процесса:
-    api-set может жить в combase, ucrtbase, kernelbase, ole32 и т.д."""
+    """Адрес импорта. Для api-ms-* перебираем все модули процесса,
+    так как реальный хост может быть любым (combase, ole32 и т.д.)."""
     if not is_api_set(dll):
         return remote_get_proc(hproc, modules, dll, name=name, ordinal=ordinal)
-    hosts = [h for h in API_SET_HOSTS if h in modules] + \
-            [m for m in modules if m not in API_SET_HOSTS and m.endswith(".dll")]
-    last = None
-    for host in hosts:
+
+    # Приоритетные хосты: для com-l1 это обычно combase.dll / ole32.dll.
+    priority_hosts = ["combase.dll", "ole32.dll", "kernelbase.dll",
+                      "kernel32.dll", "ucrtbase.dll"]
+    hosts_to_try = [h for h in priority_hosts if h in modules]
+    hosts_to_try += [m for m in modules
+                     if m not in hosts_to_try and m.endswith(".dll")]
+
+    last_error = None
+    for host in hosts_to_try:
         try:
-            return remote_get_proc(hproc, modules, host, name=name, ordinal=ordinal)
+            return remote_get_proc(hproc, modules, host,
+                                   name=name, ordinal=ordinal)
         except RuntimeError as e:
-            last = e
-    raise RuntimeError("api-set %s: экспорт не найден ни в одном модуле процесса (%s)"
-                       % (dll, last))
+            last_error = e
+            continue
+
+    raise RuntimeError("api-set %s: экспорт не найден ни в одном модуле "
+                       "процесса (%s)" % (dll, last_error))
 
 
 def resolve_imports(img, pe, hproc, pid, remote_modules):
@@ -714,67 +723,4 @@ def download(url, max_bytes=256 * 1024 * 1024):
     if not url.lower().startswith(("http://", "https://")):
         raise ValueError("URL должен начинаться с http:// или https://")
     req = urllib.request.Request(url, headers={
-        "User-Agent": "RobloxPlayer/1.0",
-        "Accept": "application/octet-stream",
-    })
-    ctx = ssl.create_default_context()
-    with urllib.request.urlopen(req, timeout=60, context=ctx) as resp:
-        data = resp.read(max_bytes + 1)
-    if len(data) > max_bytes:
-        raise ValueError("файл больше %d байт" % max_bytes)
-    if not data:
-        raise ValueError("сервер вернул пустой ответ")
-    return data
-
-
-def main():
-    ap = argparse.ArgumentParser(
-        description="Python-инжектор x64 DLL (ручной маппинг в память)")
-    src = ap.add_mutually_exclusive_group(required=False)
-    src.add_argument("--url", help="скачать DLL по http(s)://")
-    src.add_argument("--dll", help="локальный путь к DLL")
-    ap.add_argument("--pid", type=int, help="PID целевого процесса")
-    ap.add_argument("--process", help="имя процесса, например javaw.exe")
-    args = ap.parse_args()
-
-    url = args.url
-    dll = args.dll
-    if not url and not dll:
-        if DEFAULT_URL:
-            url = DEFAULT_URL
-        elif DEFAULT_DLL:
-            dll = DEFAULT_DLL
-    if not url and not dll:
-        die("укажи --url/--dll или впиши DEFAULT_URL/DEFAULT_DLL в inject.py")
-
-    if platform.architecture()[0] != "64bit":
-        die("нужен 64-битный Python")
-    if os.name != "nt":
-        die("только Windows")
-
-    if args.pid:
-        pid = args.pid
-    elif args.process:
-        pid = find_pid_by_name(args.process)
-    else:
-        pid = find_minecraft_window()
-    if not pid:
-        die("процесс не найден: укажи --pid или --process")
-    print("[*] Процесс: %s (PID %d)" %
-          (os.path.basename(proc_image_name(pid)), pid))
-
-    try:
-        if url:
-            print("[*] Скачиваю %s" % url)
-            raw = download(url)
-        else:
-            with open(dll, "rb") as f:
-                raw = f.read()
-        print("[*] Получено %d байт" % len(raw))
-        manual_map(pid, raw)
-    except (ValueError, RuntimeError, OSError) as e:
-        die(str(e))
-
-
-if __name__ == "__main__":
-    main()
+        "User-Agent": "RobloxPlayer/1.
